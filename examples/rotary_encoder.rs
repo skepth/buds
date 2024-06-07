@@ -4,13 +4,11 @@ use std::{
     error::Error,
     os::raw::c_void,
     sync::atomic::{AtomicI8, Ordering},
-    thread,
-    time::Duration,
 };
 
 use esp_idf_svc::{
     hal::{
-        gpio::{Gpio0, Gpio1, Gpio4, Input, Level, Output, PinDriver},
+        gpio::{Gpio0, Gpio1, Input, Level, PinDriver},
         peripherals::Peripherals,
     },
     sys::{
@@ -18,14 +16,13 @@ use esp_idf_svc::{
         timer_autoreload_t_TIMER_AUTORELOAD_EN, timer_config_t, timer_count_dir_t_TIMER_COUNT_UP,
         timer_enable_intr, timer_group_t_TIMER_GROUP_0, timer_idx_t_TIMER_0, timer_init,
         timer_intr_mode_t_TIMER_INTR_LEVEL, timer_isr_callback_add, timer_set_alarm_value,
-        timer_set_counter_value, timer_start, timer_start_t_TIMER_PAUSE, ESP_OK,
+        timer_set_counter_value, timer_start, timer_start_t_TIMER_PAUSE, vTaskDelay, ESP_OK,
     },
 };
 
 // Global Variable to keep state of the previous reading.
 static PREVIOUS_READING: AtomicI8 = AtomicI8::new(0);
-static DIRECTION: AtomicI8 = AtomicI8::new(-1);
-static TEST: AtomicI8 = AtomicI8::new(0);
+static COUNTER: AtomicI8 = AtomicI8::new(0);
 
 // Enum to represent the direction of rotation of the rotaty encoder.
 enum EncoderDirection {
@@ -64,7 +61,6 @@ fn get_rotation_direction(new_reading: i8) -> EncoderDirection {
 struct GpioHandle<'a> {
     input_a: PinDriver<'a, Gpio0, Input>,
     input_b: PinDriver<'a, Gpio1, Input>,
-    output: PinDriver<'a, Gpio4, Output>,
 }
 
 // Interrupt Service Routine to measure direction.
@@ -83,18 +79,12 @@ extern "C" fn read_rotary_encoder_isr(args: *mut c_void) -> bool {
 
     match dir {
         EncoderDirection::Clockwise => {
-            DIRECTION.store(0, Ordering::SeqCst);
-            let _ = TEST.fetch_add(1, Ordering::SeqCst);
-            pins.output.set_high();
+            let _ = COUNTER.fetch_add(1, Ordering::SeqCst);
         }
         EncoderDirection::AntiClockwise => {
-            DIRECTION.store(1, Ordering::SeqCst);
-            let _ = TEST.fetch_add(-1, Ordering::SeqCst);
+            let _ = COUNTER.fetch_add(-1, Ordering::SeqCst);
         }
-        EncoderDirection::None => {
-            DIRECTION.store(-1, Ordering::SeqCst);
-            pins.output.set_low();
-        }
+        EncoderDirection::None => {}
     }
     true
 }
@@ -143,20 +133,15 @@ fn main() {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().unwrap();
-    let mut input_a = PinDriver::input(peripherals.pins.gpio0).unwrap();
-    let mut input_b = PinDriver::input(peripherals.pins.gpio1).unwrap();
-    let mut output = PinDriver::output(peripherals.pins.gpio4).unwrap();
+    let input_a = PinDriver::input(peripherals.pins.gpio0).unwrap();
+    let input_b = PinDriver::input(peripherals.pins.gpio1).unwrap();
 
     let group_number = timer_group_t_TIMER_GROUP_0;
     let timer_number = timer_idx_t_TIMER_0;
 
     let _ = timer_initialize(group_number, timer_number).inspect_err(|e| log::error!("Error: {e}"));
 
-    let mut handle = GpioHandle {
-        input_a,
-        input_b,
-        output,
-    };
+    let mut handle = GpioHandle { input_a, input_b };
     unsafe {
         timer_isr_callback_add(
             group_number,
@@ -170,9 +155,16 @@ fn main() {
 
     log::info!("Running test...");
 
+    let mut prev_reading: i8 = -20;
     loop {
-        log::info!("TEST: {}", TEST.load(Ordering::SeqCst));
+        let curr_reading: i8 = COUNTER.load(Ordering::SeqCst);
+        if curr_reading != prev_reading {
+            log::info!("Pointer: {}", curr_reading);
+        }
 
-        thread::sleep(Duration::from_millis(1000));
+        prev_reading = curr_reading;
+
+        // Feeding the watchdog
+        unsafe { vTaskDelay(1) };
     }
 }
