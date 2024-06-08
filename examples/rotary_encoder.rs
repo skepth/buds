@@ -8,7 +8,7 @@ use std::{
 
 use esp_idf_svc::{
     hal::{
-        gpio::{Gpio0, Gpio1, Input, Level, PinDriver},
+        gpio::{Gpio0, Gpio1, Input, InterruptType, Level, PinDriver},
         peripherals::Peripherals,
     },
     sys::{
@@ -23,6 +23,7 @@ use esp_idf_svc::{
 // Global Variable to keep state of the previous reading.
 static PREVIOUS_READING: AtomicI8 = AtomicI8::new(0);
 static COUNTER: AtomicI8 = AtomicI8::new(0);
+static BUTTON_PRESS: AtomicI8 = AtomicI8::new(0);
 
 // Enum to represent the direction of rotation of the rotaty encoder.
 enum EncoderDirection {
@@ -135,6 +136,18 @@ fn main() {
     let peripherals = Peripherals::take().unwrap();
     let input_a = PinDriver::input(peripherals.pins.gpio0).unwrap();
     let input_b = PinDriver::input(peripherals.pins.gpio1).unwrap();
+    let mut input_switch = PinDriver::input(peripherals.pins.gpio2).unwrap();
+
+    input_switch.set_interrupt_type(InterruptType::PosEdge);
+
+    // A simple Interrupt Service Routine that toggles an led
+    // based on a timer interrupt every 10 sec.
+    let switch_interrupt = || {
+        let _ = BUTTON_PRESS.fetch_add(1, Ordering::SeqCst);
+    };
+    unsafe { input_switch.subscribe(switch_interrupt) };
+
+    input_switch.enable_interrupt();
 
     let group_number = timer_group_t_TIMER_GROUP_0;
     let timer_number = timer_idx_t_TIMER_0;
@@ -153,16 +166,21 @@ fn main() {
     };
     let _ = unsafe { timer_start(group_number, timer_number) };
 
-    log::info!("Running test...");
-
     let mut prev_reading: i8 = -20;
+    let mut prev_button_reading: i8 = -20;
     loop {
+        input_switch.enable_interrupt();
         let curr_reading: i8 = COUNTER.load(Ordering::SeqCst);
+        let curr_button_reading: i8 = BUTTON_PRESS.load(Ordering::SeqCst);
         if curr_reading != prev_reading {
             log::info!("Pointer: {}", curr_reading);
         }
+        if curr_button_reading != prev_button_reading {
+            log::info!("Button: {}", curr_button_reading);
+        }
 
         prev_reading = curr_reading;
+        prev_button_reading = curr_button_reading;
 
         // Feeding the watchdog
         unsafe { vTaskDelay(1) };
